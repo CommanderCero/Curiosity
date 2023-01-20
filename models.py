@@ -35,12 +35,11 @@ class Conv2DEmbedding(nn.Module):
         self.out_net = create_feedforward([input_size, embedding_size])
         
     def forward(self, X):
+        X = X.float() / 255.0
         X = self.conv_net(X)
         X = torch.flatten(X, start_dim=1)
         X = self.out_net(X)
         return X
-    
-    
 
 class OneHotForwardModel(nn.Module):
     '''
@@ -60,7 +59,7 @@ class OneHotForwardModel(nn.Module):
             actions: [batch_size, 1]
         '''
         # [batch_size, 1, num_actions]
-        one_hot_actions = F.one_hot(actions, num_classes=self.num_actions)
+        one_hot_actions = F.one_hot(actions.long(), num_classes=self.num_actions)
         # [batch_size, num_actions]
         one_hot_actions = one_hot_actions.squeeze(1)
         
@@ -69,6 +68,19 @@ class OneHotForwardModel(nn.Module):
         # [batch_size, embedding_size]
         state_predictions = self.state_predictor_net(X)
         return state_predictions
+    
+    def compute_loss(self, states, actions, next_states):
+        '''
+        Computes a loss indicating how good this model is in predicting the next_state from (state, action) pairs.
+        The used loss is the Mean Squared Error between the real and predicted next_state.
+        Assumptions:
+            states: [batch_size, embedding_size]
+            actions: [batch_size, 1]
+            next_states: [batch_size, embedding_size]
+            
+        '''
+        predicted_next_states = self.forward(states, actions)
+        return F.mse_loss(predicted_next_states, next_states)
     
 class CategoricalActionPredictor(nn.Module):
     def __init__(self, logits_net: nn.Module):
@@ -82,9 +94,32 @@ class CategoricalActionPredictor(nn.Module):
             states: [batch_size, embedding_size]
             next_states: [batch_size, embedding_size]
         '''
+        logits = self.compute_logits(states, next_states)
+        return torch.distributions.Categorical(logits=logits)
+    
+    def compute_loss(self, states, next_states, actions):
+        '''
+        Computes a loss indicating how good this model is in predicting the given actions from (state, next_state) pairs.
+        The used loss is the cross-entropy loss between the real and predicted actions.
+        Assumptions:
+            states: [batch_size, embedding_size]
+            next_states: [batch_size, embedding_size]
+            actions: [batch_size, 1]
+        '''
+        logits = self.compute_action_logits(states, next_states)
+        return F.cross_entropy(logits, actions.long().flatten())
+        
+    def compute_action_logits(self, states, next_states):
+        '''
+        Predicts the executed actions from the given (state, next_state) pairs.
+        Returns logits for each possible action.
+        Assumptions:
+            states: [batch_size, embedding_size]
+            next_states: [batch_size, embedding_size]
+        '''
         # [batch_size, embedding_size * 2]
         X = torch.concat([states, next_states], dim=1)
         # [batch_size, num_actions]
         logits = self.logits_net(X)
-        return torch.distributions.Categorical(logits=logits)
+        return logits
 
